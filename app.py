@@ -48,7 +48,7 @@ def twiml_response(twiml: VoiceResponse) -> Response:
 # Inbound call — greet and record
 # ---------------------------------------------------------------------------
 
-@app.post("/voice")
+@app.api_route("/voice", methods=["GET", "POST"])
 async def inbound_call():
     """
     Twilio calls this when someone dials the Nanma number.
