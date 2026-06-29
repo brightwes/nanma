@@ -29,7 +29,8 @@ load_dotenv()
 
 openai_client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 twilio = TwilioClient(os.environ["TWILIO_ACCOUNT_SID"], os.environ["TWILIO_AUTH_TOKEN"])
-TWILIO_NUMBER = os.environ["TWILIO_PHONE_NUMBER"]   # e.g. "+15005550006"
+TWILIO_VOICE_NUMBER = os.environ["TWILIO_PHONE_NUMBER"]     # toll-free, receives calls
+TWILIO_SMS_NUMBER = os.environ.get("SMS_FROM_NUMBER", os.environ["TWILIO_PHONE_NUMBER"])  # local number, sends texts
 
 app = FastAPI()
 
@@ -181,7 +182,7 @@ async def _generate_response(question: str) -> tuple[str, str]:
 def _send_sms(to: str, body: str) -> None:
     twilio.messages.create(
         to=to,
-        from_=TWILIO_NUMBER,
+        from_=TWILIO_SMS_NUMBER,
         body=body,
     )
 
