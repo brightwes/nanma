@@ -12,21 +12,22 @@ Flow:
 """
 
 import os
-import re
-import textwrap
 import httpx
 
-from fastapi import FastAPI, Form, Request
+from dotenv import load_dotenv
+from fastapi import BackgroundTasks, FastAPI, Form
 from fastapi.responses import Response
 from twilio.rest import Client as TwilioClient
-from twilio.twiml.voice_response import VoiceResponse, Record
+from twilio.twiml.voice_response import VoiceResponse
 from openai import OpenAI
+
+load_dotenv()
 
 # ---------------------------------------------------------------------------
 # Clients
 # ---------------------------------------------------------------------------
 
-openai = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+openai_client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 twilio = TwilioClient(os.environ["TWILIO_ACCOUNT_SID"], os.environ["TWILIO_AUTH_TOKEN"])
 TWILIO_NUMBER = os.environ["TWILIO_PHONE_NUMBER"]   # e.g. "+15005550006"
 
@@ -78,18 +79,25 @@ async def inbound_call():
 
 @app.post("/recording-complete")
 async def recording_complete(
+    background_tasks: BackgroundTasks,
     RecordingUrl: str = Form(...),
     CallSid: str = Form(...),
     From: str = Form(...),
 ):
     """
     Twilio posts here when the recording is ready.
-    We download the audio, transcribe it, generate a reply, and SMS the caller.
+    We acknowledge immediately (Twilio has a 15s webhook timeout) and do the
+    heavy work — download, Whisper, GPT, SMS — in a background task.
+    Vercel Fluid Compute keeps the function alive until background tasks finish.
     """
-    caller_number = From
+    background_tasks.add_task(_process_recording, RecordingUrl, From)
+    return Response(content="<Response/>", media_type=TWIML_CONTENT_TYPE)
 
+
+async def _process_recording(recording_url: str, caller_number: str) -> None:
+    """Download the recording, transcribe, generate a response, and SMS the caller."""
     # 1. Download the recording (Twilio requires auth for .mp3 access)
-    audio_url = RecordingUrl + ".mp3"
+    audio_url = recording_url + ".mp3"
     async with httpx.AsyncClient() as client:
         audio_resp = await client.get(
             audio_url,
@@ -99,7 +107,7 @@ async def recording_complete(
     audio_bytes = audio_resp.content
 
     # 2. Transcribe with Whisper
-    transcription = openai.audio.transcriptions.create(
+    transcription = openai_client.audio.transcriptions.create(
         model="whisper-1",
         file=("recording.mp3", audio_bytes, "audio/mpeg"),
     )
@@ -111,7 +119,7 @@ async def recording_complete(
             "Hi! We received your call but couldn't make out what you said. "
             "Please try calling again and speak clearly after the beep.",
         )
-        return Response(content="ok")
+        return
 
     # 3. Generate response via GPT
     meta_msg, answer_msg = await _generate_response(question)
@@ -119,8 +127,6 @@ async def recording_complete(
     # 4. Send two SMS messages
     _send_sms(caller_number, meta_msg)
     _send_sms(caller_number, answer_msg)
-
-    return Response(content="ok")
 
 
 # ---------------------------------------------------------------------------
@@ -147,7 +153,7 @@ Just the clean, finished message or answer.
 
 
 async def _generate_response(question: str) -> tuple[str, str]:
-    completion = openai.chat.completions.create(
+    completion = openai_client.chat.completions.create(
         model="gpt-4o",
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
